@@ -6,21 +6,20 @@ output:
   pdf_document:
     number_sections: yes
     toc: yes
+    includes:  
+      in_header: my_header.tex
   html_document:
     df_print: paged
     toc: yes
-bibliography: SL2020_task1.bib
-params:
-  archivo: "soldat.csv"
-  semilla: 1234
-  myDescription: "Data set: Aqueous Solubility in Drug Discovery [@james2013introduction]"
+bibliography: SL2020_task1.bib  
 editor_options: 
   chunk_output_type: console
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning=FALSE, error=FALSE)
-#we set same directory for data
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, error = FALSE, message = FALSE ,
+                      tidy.opts=list(width.cutoff=55))
+# we set same directory for data
 ```
 
 
@@ -28,24 +27,24 @@ knitr::opts_chunk$set(echo = TRUE, warning=FALSE, error=FALSE)
 # libraries
 
 # If the package is not installed then it will be installed
-if(!require("knitr")) install.packages("knitr")
-if(!require("tree")) install.packages("tree")
-if(!require("readr")) install.packages("readr")
-if(!require("knitr")) install.packages("knitr")
-if(!require("caret")) install.packages("caret")
-if(!require("gridExtra")) install.packages("gridExtra")
+if (!require("tree")) install.packages("tree")
+if (!require("tree")) install.packages("fastAdaboost")
+if (!require("readr")) install.packages("readr")
+if (!require("knitr")) install.packages("knitr")
+if (!require("caret")) install.packages("caret")
+if (!require("gridExtra")) install.packages("gridExtra")
+if (!require("ggplot2")) install.packages("ggplot2")
 
 require("readr")
 require("tidyverse")
-require("knitr")
-require("tree")
 require("caret")
 require("gridExtra")
+require("ggplot2")
 ```
 
 \section{Problem}
 
-We want to predict the solubility of a compound using 72 noisy structural variables for which we have have no other information than values. The solubility of each compound is coded '1' for soluble and '0' for insoluble. It is a binary classification problem. We want to build tree based CART, random forest and boosting trees models.
+We want to predict the solubility of a compound using 72 noisy structural variables for which we have have no other information than values. The solubility of each compound is coded '1' for soluble and '-1' for insoluble. It is a binary classification problem. We want to build tree based models: CART, random forest and boosting trees models.
 
 \section{Exploratory data analysis}
 
@@ -54,18 +53,18 @@ We want to predict the solubility of a compound using 72 noisy structural variab
 ```{r}
 # data parsing
 soldat <- read_csv("soldat.csv")
-soldat$y <- factor(soldat$y,levels = c(-1,1),labels = c("insoluble","soluble"))
+soldat$y <- factor(soldat$y, levels = c(-1, 1), labels = c("insoluble", "soluble"))
 n <- nrow(soldat)
-p <- ncol(soldat)
+p_start <- ncol(soldat)
 ```
 
-The data set has **`r n`** observations on **`r p`** variables, that is one outcome variable and **`r p-1`** predictors. All the predictors are named as **x1** to **x72**  and are continuous variables.
+The data set has **`r n`** observations on **`r p_start`** variables, that is one outcome variable and **`r p_start-1`** predictors. All the predictors are named as **x1** to **x72**  and are continuous variables.
 
 \subsection{Variability}
 
 *Outcome variable:*
 
-**y variable**  indicates the solubility. `r sum(soldat$y == 1)` of the compounds are soluble, and `r sum(soldat$y == -1)` are not, which represents a `r paste(round(100*sum(soldat$y == 1)/dim(soldat)[1], 2), "%", sep="")` and a `r paste(round(100*sum(soldat$y ==-1)/dim(soldat)[1], 2), "%", sep="")`, respectively. The dataset is not balanced but both classes are well represented.
+**y variable**  indicates the solubility. `r sum(soldat$y == 1)` of the compounds are soluble, and `r sum(soldat$y == -1)` are not, which represents a `r paste(round(100*sum(soldat$y == 1)/dim(soldat)[1], 2), "%", sep="")` and a `r paste(round(100*sum(soldat$y ==-1)/dim(soldat)[1], 2), "%", sep="")`, respectively. The classes are not fully balanced but both classes are well represented.
 
 ```{r}
 table(soldat$y)
@@ -73,62 +72,71 @@ table(soldat$y)
 
 *Predictors:*
 
-Boxplots of our continous predictors show the scale and variability of the predictors differ greatly. The difference in scales is not a problem to build tree based models because those are invariant under strictly monotone transforma-
-tions of the individual predictors [1].
+Boxplots of our continous predictors (Fig.\ref{fig:fig1}) show the scale and variability of the predictors vary greatly. The difference in scales is not a problem to build tree based models because those are invariant under strictly monotone transformations of the individual predictors [@ESLII, p372].
 
-```{r}
-bxp1 <- soldat %>% 
-  select(-y) %>% 
-  select(num_range("x",c(1:18))) %>% 
-  stack() %>% 
-  ggplot(aes(x = ind, y = values)) +  geom_boxplot() + xlab("")
+```{r,fig.cap="\\label{fig:fig1} Boxplot of predictors",out.extra = "", fig.pos = 'h!', fig.align="center"}
+bxp1 <- soldat %>%
+  select(-y) %>%
+  select(num_range("x", c(1:18))) %>%
+  stack() %>%
+  ggplot(aes(x = ind, y = values)) +
+  geom_boxplot() +
+  xlab("")
 
-bxp2 <- soldat %>% 
-  select(-y) %>% 
-  select(num_range("x",c(19:34))) %>% 
-  stack() %>% 
-  ggplot(aes(x = ind, y = values)) +  geom_boxplot() + xlab("")
+bxp2 <- soldat %>%
+  select(-y) %>%
+  select(num_range("x", c(19:34))) %>%
+  stack() %>%
+  ggplot(aes(x = ind, y = values)) +
+  geom_boxplot() +
+  xlab("")
 
-bxp3 <- soldat %>% 
-  select(-y) %>% 
-  select(num_range("x",c(35:50))) %>% 
-  stack() %>% 
-  ggplot(aes(x = ind, y = values)) +  geom_boxplot() + xlab("")
+bxp3 <- soldat %>%
+  select(-y) %>%
+  select(num_range("x", c(35:50))) %>%
+  stack() %>%
+  ggplot(aes(x = ind, y = values)) +
+  geom_boxplot() +
+  xlab("")
 
-bxp4 <- soldat %>% 
-  select(-y) %>% 
-  select(num_range("x",c(55:72))) %>% 
-  stack() %>% 
-  ggplot(aes(x = ind, y = values)) +  geom_boxplot() + xlab("")
+bxp4 <- soldat %>%
+  select(-y) %>%
+  select(num_range("x", c(55:72))) %>%
+  stack() %>%
+  ggplot(aes(x = ind, y = values)) +
+  geom_boxplot() +
+  xlab("")
 
-grid.arrange(bxp1,bxp2,bxp3,bxp4,ncol=2)
+grid.arrange(bxp1, bxp2, bxp3, bxp4, ncol = 2)
 ```
 
-We also see that some of our predictors seem to have 0 o near 0 variance. The problem with those predictors is that they may become zero-variance predictors when the data are split into sub-samples for cross-validation for example or that a few samples with a different value from one the majority of the sample takes may have an undue influence on the model. To identify those, two metrics can be used: the frequency of the most prevalent value over the second most frequent value and percentage of unique values. However, according to Kuhn et Johson in [2], tree based models are insensitive to such problematic predictors so we can keep them in the dataset.
+We also see that some of our predictors seem to have 0 o near 0 variance. The problem with those predictors is that they may become zero-variance predictors when the data are split into sub-samples for cross-validation for example or that a few samples with a different value from the one the majority of the sample takes may have an undue influence on the model. To identify those, two metrics can be used: the frequency of the most prevalent value over the second most frequent value and percentage of unique values. However, tree based models are insensitive to such problematic predictors so we can keep them in the dataset [@APM, p44].
 
-If near 0 variance predictors are not an issue, the number of unique values in predictors can impact the tree model. According to [2], tree based model have a selection bias and favour continous variables with more granularity as they offer more possible splits. There is then the risk of a bias towards noise granular variables while informative less granular variables might not be chosen. In xxxx below, the histogram of the number of unique values per predictor shows some predictors have less than 100 unique values. We will need to keep this in mind when interpreting the variable importance scores.
+If near 0 variance predictors are not an issue, the number of unique values in predictors can impact the tree model. Tree based models have a selection bias and favour continuous variables with more granularity as they offer more possible splits [@APM, p182]. There is then the risk of a bias towards noise granular variables while informative but less granular variables might not be given the deserved importance. In Fig.\ref{fig:fig2} below, the histogram of the number of unique values per predictor shows some predictors have less than 100 unique values. We will need to keep this in mind when interpreting the variable importance scores.
 
-```{r}
-nb_unique_val <- function(x){
+```{r,fig.cap="\\label{fig:fig2} Histogram of number of unique values per predictor",out.extra = "", fig.pos = 'h!', fig.align="center"}
+nb_unique_val <- function(x) {
   return(length(unique(x)))
 }
 
-tibble(nb=sapply(soldat %>% select(-y),nb_unique_avl))  %>% 
-  ggplot() + geom_histogram(aes(x=nb),col="grey", bins = 100) +
-  geom_vline(xintercept = 300, col = "red") + xlab("Number of unique values")
+tibble(nb = sapply(soldat %>% select(-y), nb_unique_val)) %>%
+  ggplot() +
+  geom_histogram(aes(x = nb), col = "grey", bins = 100) +
+  geom_vline(xintercept = 300, col = "red") +
+  xlab("Number of unique values")
 ```
 
 \subsection{Correlation}
 
 \subsubsection{Correlation between predictors}
 
-Very high correlation between predictors is often an issue for model selection and it is the case for tree-based models according to [2]. When two predictors are highly correlated the information they carry is redundant. In the tree growth, the choice between the two for a split will be driven by small differences between the two predictors that are noise, instead a valuable information. Moreover in the tree growth process, the two predictors might be chosen in two different splits and thus a set of variables in the tree is redundant as the two predictors carry the same information. This affects the variable importance scores interpretation. When there should be only one of the variable there will be two and the importance of the variable will not be accurately reflectled.
+Very high correlation between predictors is often an issue for model selection and it is the case for tree-based models [@APM, p202]. When two predictors are highly correlated, the choice between the two for a split will be driven by small differences between the two predictors that are noise, instead of valuable information. Uninformative predictors with high correlations to informative predictors had abnormally large importance values. Moreover two perfectly correlated predictors represent the same information but both will be chosen at random in the tree growth process, and the importance of the underlying variable they represent will be diluted in the importance scores.
 
-We build a heatmap of the correlation matrix and the dendogram for the corresponding hierarchical clustering. We observe some variables high correlate (red) and form clusters.
+We build a heatmap of the correlation matrix of the predictors and the dendogram for the corresponding hierarchical clustering (Fig.\ref{fig:fig3}). We observe some variables high correlate (red) and form clusters.
 
-```{r}
+```{r,fig.cap="\\label{fig:fig3} Heatmap of predictors correlation and hierarchical clustering",out.extra = "", fig.pos = 'h!', fig.align="center"}
 v <- cor(soldat %>% select(-y), use = "pairwise.complete.obs")
-col<- colorRampPalette(c("blue", "white", "red"))(20)
+col <- colorRampPalette(c("blue", "white", "red"))(20)
 heatmap(v, col = col, symm = TRUE, Colv = "Rowv")
 ```
 
@@ -137,106 +145,256 @@ high_corr <- colnames(soldat)[findCorrelation(v, cutoff = 0.95)]
 soldat <- soldat %>% select(-all_of(high_corr))
 ```
 
-The `caret` function `findCorrelation` lets us identify quickly which variables are high correlated and can be removed. We used a cutoff for Pearson's correlation of 0.95. We find `r length(high_corr)` variables than can be removed.
+The `caret` function `findCorrelation` lets us identify quickly which variables are high correlated and can be removed. We used a cutoff for Pearson's correlation of 0.95. We find `r length(high_corr)` predictors than can be removed and we are left with `r p_start-1-length(high_corr)` predictores.
 
 \subsubsection{Correlation between predictors and outcome variable}
 
-The analysis of correlation between variables in an exploratory data analysis can also be useful to identify a subset of predictors that correlate with the outcome variable. This has two objectives: guiding the analysis and also finding a subset of predictors for model selection process. This is particularly useful in the case of high dimensional settings where a large number of predictors can severely hinder the model selection and estimation. Other dimensionality reduction techniques can also be used. In our case we have only 47 predictors which is not such a large number and we do not reduce the dimension.
+The analysis of correlation between variables in an exploratory data analysis can also be useful to identify a subset of predictors that correlate with the outcome variable. This has two objectives: guiding the analysis and also finding a subset of predictors for model selection process. This is particularly useful in the case of high dimensional settings where a large number of predictors can severely hinder the model selection and estimation. Dimensionality reduction techniques can also be used to limit the number of predictors. In our case we have only `r p_start-length(high_corr)` predictors which is not such a large number and we decide not to reduce the dimension.
 
-In our case the outcome in a binary categorial variable and the predictors are continuous. A possible way to identify predictors that can be useful in predicting the two classes are boxplots. A potential good predictor is a predictor that has different distributions under the two classes. The boxplots for each predictors are available in the Annex. From all the predictors, four present visually different distributions under the two classes and the plots are reproduced in XXXX.
+In our case the outcome in a binary categorial variable and the predictors are continuous. A possible way to identify predictors that can be useful in predicting the two classes are boxplots. A potential good predictor is a predictor which distribution differs under the two classes. The boxplots for each predictors are available in the Appendix. From all the predictors, four present visually different distributions under the two classes: `x35`, `x36`, `x37` and `x41`. and the boxplots are reproduced in \ref{fig:fig4}.
 
-```{r}
+```{r,fig.cap="\\label{fig:fig4} Boxplots of potential good predictors under the two classes",out.extra = "", fig.pos = 'h!', fig.align="center"}
 p <- list()
 i <- 1
-for(v in c("x35","x36","x37","x41")){
-  p[[i]] <- ggplot(data=soldat) + geom_boxplot(aes_string(x="y",y=v))
-  i <- i+1
+for (v in c("x35", "x36", "x37", "x41")) {
+  p[[i]] <- ggplot(data = soldat) +
+    geom_boxplot(aes_string(x = "y", y = v))
+  i <- i + 1
 }
-do.call(grid.arrange,list(grobs=p,ncol=2))
+do.call(grid.arrange, list(grobs = p, ncol = 2))
 ```
 
 \subsection{Missing data}
 
 ```{r}
-apply(is.na(soldat),2, mean)
+apply(is.na(soldat), 2, mean)
 ```
 
-The filtered dataset has no missing data. Before filtering for highly correlated data, the variable `x71` had missings but it has been filtered. In any case the presence of missing data is not an issue for tree based models when using package `rpart` (`rpart` through `caret`) as a surrogate split is used whenever for prediction of observation with missing data for a particular variable over whiche a split is made.  
+The filtered dataset has no missing data. Before filtering for highly correlated data, the variable `x71` had missings but it has been filtered. In any case, the presence of missing data is not an issue for tree based models when using package `rpart` (`rpart` through `caret`) as a surrogate split is used for prediction whenever there is a missing data for a particular variable over which a split is made.
 
+\subsection{Outliers}
 
-\section{ Split into training/test dataset}
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ 
+\section{Split into training/test dataset}
 
-To split the data into balanced training and a test sets we can use the `caret` function `createDataPartition`.
+To split the data into balanced training and test sets we can use the `caret` function `createDataPartition`.
 
 ```{r}
 set.seed(1234)
-inTest <- createDataPartition(soldat$y,p = 0.5, list = FALSE)[,1]
-training <- soldat[inTest,]
-test <- soldat[-inTest,]
+inTest <- createDataPartition(soldat$y, p = 0.5, list = FALSE)[, 1]
+test <- soldat[inTest, ]
+training <- soldat[-inTest, ]
 ```
 
 We check the train and test sets preserve the overall class distribution of the data.
 
 ```{r}
-cat("Train set class distribution\n"); table(training[,"y"])/nrow(training)
-cat("Test set class distribution\n"); table(test[,"y"])/nrow(test)
+cat("Train set class distribution\n")
+round(table(training[, "y"]) / nrow(training), 2)
+cat("Test set class distribution\n")
+round(table(test[, "y"]) / nrow(test), 2)
 ```
 
 \section{Pruned tree}
 \subsection{Fitting}
+
+We fit a single classification tree (CART) with `rpart1SE` method in `caret`. This implementation uses a Gini impurity function to chose the splits in the tree growth phase. The pruning is done by cost-complexity tuning. We use 5-fold cross-validation over the area under the ROC curve to choose the cost-complexity parameter. The choice of a 5-fold cross-validation as resampling method is driven by the will to pick a method that has little computional cost and that can be used over all the models that will be fitted in this work, such that the training error measures are comparable. Random forest and boosting models are computationally costly by itself so a high cost resampling can make the fitting of those very lengthy. We chose the area under the ROC as performance metric because its a more comprehensive performance metric than accuracy or Kappa, that is availably for binary classification. Finally, `rpart1SE` applies the one-standard deviation rule to pick the final tree which results in a smaller tree.
+
 ```{r}
-ctrl <- trainControl(method = "repeatedcv", 
-                     repeats=5,
-                     number = 10, 
-                     classProbs=TRUE, 
-                     summaryFunction=twoClassSummary)
-CART <- train (y ~ ., data=training, method="rpart1SE", trControl=ctrl, metric = "ROC")
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+CART <- train(y ~ ., data = training, method = "rpart1SE", trControl = ctrl, metric = "ROC")
 ```
 
 \subsection{Performance}
 
+\subsubsection{Training error}
+
+We can compute a series of performance metric for the final model on the training set with the `confusionMatrix` function of `caret`. We see the model has good accuracy, significantly different from the non-informative rate.  Taking 'insoluble' as the positive class, the sensitivity is better than the specificity.
+
 ```{r}
-CART
-CART$results
+pred_train_CART <- predict.train(CART, type = "raw")
+confusionMatrix(data = pred_train_CART, reference = training$y)
 ```
+
+We can also obtain the area under the ROC curve: `r round(CART$results[,2],3)`
+
+\subsubsection{Test errror}
+
+We now compute the same performance metrics on the test set. We see the accuracy is a bit smaller but still significantly different from the non-informative rate. The Mcnemar's test p-value shows the classification is also significantly different from the best guess. Both sensitivity and specificity are smaller than in the training set but by a small amount. Sensitivity is again larger than the specificity.
+
+```{r}
+pred_CART <- predict(CART, newdata = test)
+
+confusionMatrix(data = pred_CART, reference = test$y)
+
+df <- data.frame(obs = test$y, pred = pred_CART, predict(CART, newdata = test, type = "prob"))
+```
+
+The area under the ROC curve is smaller than on the training set at `r round(twoClassSummary(df, lev = levels(df$obs))[1],3)`
 
 \section{Random forest}
 
-Tune the parameters: number of trees and number of variables in per node, by implementing a grid search procedure. Assess the performance of RF using suitable metrics. Determine which variables are the most relevant in the solubility prediction.
+\subsection{Fitting}
 
-```{r}
-ctrl <- trainControl(method = "repeatedcv", 
-                     repeats=5,
-                     number = 10, 
-                     classProbs=TRUE, 
-                     summaryFunction=twoClassSummary)
+We use `rf` method in `caret` that sources the implemention in package `randomForest`. We need to choose two tuning parameters, the number of trees and $m_{try}$ the number of randomly selected predictors to choose from at each split. In the `rf` method in `caret`, $m_{try}$ is the only parameter marked as tuning parameter. So to implement the grid search, we used the inbuilt function `tuneGrid` for $m_{try}$ and a loop over values of the number of tree. The computional cost in high so we ran the code in a separate Google colab using parallel computing (see 'Parallel Random Forest'attached). The code is reproduced in this report. We first tried equally spaced values of $m_{try}$ between 2 and 45 and then reduced the range to 2 to 12 because the best $m_{try}$ found was always small values. We try values of 1000, 1500, 2000 and 2500 for the number of trees. Such values were chosen following the recommendations of [@APM, p387]. The grid of $m_{try}$ include the often recommended value of the square root of the number of predictors, approximately `r round(sqrt(p_start-1-length(high_corr)),0)`. The resampling applied for the paramters tuning is a 5-fold cross-validation, consistent with the one used for the CART model. The performance metric is the area under the ROC.
 
-RF <- train (y ~ ., data=training, method="rf", trControl=ctrl, metric = "ROC")
+```{r, eval = FALSE}
+control <- trainControl(
+  method = "cv", number = 5, search = "grid", classProbs = TRUE,
+  allowParallel = TRUE, summaryFunction = twoClassSummary
+)
+metric <- "ROC"
+tunegrid <- expand.grid(mtry = seq(2, 45, 5)) # then seq(2,12,2)
+rf_models <- list()
+
+
+i <- 1
+for (ntree in c(1000, 1500, 2000, 2500)) {
+  cat(paste0("Training with ", ntree, " trees ..."))
+  rf_models[[i]] <- train(y ~ .,
+    data = training,
+    method = "rf",
+    metric = metric,
+    tuneGrid = tunegrid,
+    trControl = control,
+    ntree = ntree
+  )
+  i <- i + 1
+}
+save(rf_models, file = "rf_models.Rdata")
 ```
 
-\section{ Compare pruned single tree and random forest classifier}
+For the values in the grid of number of trees yielded very similar results (\ref{fig:fig5}). For all of them, the maximum AUC is attained for small values of $m_{try}$, 2 or 4. We noted than for initial runs of the random forest with the unfiltered set of predictors, the best $m_{try}$ varied more across the number of trees values. This might be due to the confusion introduced in the best split selection by highly correlated predictors as explained in the exploratory data analysis. We see little to no improvement in the area under the ROC curve for number of trees larger than 1500.
 
-Taking into account above metrics, compare the classifiers in 3) and 4).
+```{r,fig.cap="\\label{fig:fig5} ROC in function of mtry and number of trees",out.extra = "", fig.pos = 'h!', fig.align="center"}
+load("rf_models.Rdata")
+n_trees <- c(1000, 1500, 2000, 2500)
+p <- list()
+for (i in 1:4) {
+  p[[i]] <- ggplot(rf_models[[i]]) +
+    ggtitle(paste("N. trees:", n_trees[i])) +
+    theme(text = element_text(size = 10))
+}
+do.call(grid.arrange, list(grobs = p, ncol = 2))
+```
+
+We order the pairs of $m_{try}$ and number of trees by ROC and present the top 10 ones in Table 1. The highest ROC is obtained for 1500 trees with $m_{try}$ equal to 2.
 
 ```{r}
+df <- rbind(
+  rf_models[[1]]$results[, 1:2],
+  rf_models[[2]]$results[, 1:2],
+  rf_models[[3]]$results[, 1:2],
+  rf_models[[4]]$results[, 1:2]
+)
+df$n_trees <- c(rep(1000, 6), rep(1500, 6), rep(2000, 6), rep(2500, 6))
 
-resamps <- resamples(list(SingleTree = CART,
-                          RandomForest = RF
-                          ))
+df <- df[, c(1, 3, 2)] %>%
+  arrange(-ROC) %>%
+  slice(1:10)
+kable(df,
+  digits = c(0, 0, 4),
+  col.names = c("mtry", "Number of trees", "ROC"),
+  align = "c",
+  caption = "Top 10 pairs of tuning parameters"
+)
+
+RF <- rf_models[[2]]
+```
+
+\subsection{Performance}
+
+\subsubsection{Training error}
+
+We can compute a series of performance metric for the final model on the training set. We see the model has excellent accuracy, significantly different from the non-informative rate.  Taking 'insoluble' as the positive class, both the sensitivity and specificity are very high.
+
+```{r}
+pred_train_RF <- predict.train(RF, type = "raw")
+confusionMatrix(data = pred_train_RF, reference = training$y)
+```
+
+We can also obtain the area under the ROC curve: `r round(RF$results[1,2],3)`
+
+\subsubsection{Test errror}
+
+We now compute the same performance metrics on the test set. We see the accuracy is smaller but still significantly different from the non-informative rate. The Mcnemar's test p-value shows the classification is also significantly different from the best guess. Both sensitivity and specificity are smaller than in the training set. Sensitivity is  larger than the specificity.
+
+```{r}
+pred_RF <- predict(RF, newdata = test)
+
+confusionMatrix(data = pred_RF, reference = test$y)
+
+df <- data.frame(obs = test$y, pred = pred_RF, predict(RF, newdata = test, type = "prob"))
+```
+
+The area under the ROC curve is larger than on the training set at `r round(twoClassSummary(df, lev = levels(df$obs))[1],3)`
+
+\subsection{Variable importance}
+
+We can extract the variable importance using the `varImp` function of `caret`. For classification random forest is computed as the difference in out-of-bag accuracy when permuting each predictor, standardized over all the trees. The values are scaled to have a maximum value of 100. We find among the three most important variables are three out of the 4 variables we had flagged as potential good predictors in the exploratory data analysis: `x36`, `x37` and `x41`.
+
+```{r}
+varImp(RF)
+```
+
+
+\section{Compare pruned single tree and random forest classifier}
+
+The function `resamples` of `caret` lets us compare easily the performance of the two models. Resamples provide an estimate of the standard error of the performance metric for each model. First we can visualize the distributions of the three performance metrics ROC, specificity and sensitivity over the cross-validation folds for each model (Fig. \ref{fig:fig6}). We see the boxplots of the ROC are well separated with the median and third and first quartiles of random forest ROC being superior to single tree ones. The same occurs for the sensitivity. The boxplots of the specificity of the single tree and the random forest models overlap but the median of the random forest specificities is higher that the single tree one.
+
+```{r,fig.cap="\\label{fig:fig6} Boxplot of performance metric distributions",out.extra = "", fig.pos = 'h!', fig.align="center"}
+resamps <- resamples(list(
+  SingleTree = CART,
+  RandomForest = RF
+))
 
 theme1 <- trellis.par.get()
-theme1$plot.symbol$col = rgb(.2, .2, .2, .4)
-theme1$plot.symbol$pch = 16
-theme1$plot.line$col = rgb(1, 0, 0, .7)
+theme1$plot.symbol$col <- rgb(.2, .2, .2, .4)
+theme1$plot.symbol$pch <- 16
+theme1$plot.line$col <- rgb(1, 0, 0, .7)
 theme1$plot.line$lwd <- 2
 trellis.par.set(theme1)
-bwplot(resamps, layout = c(2, 1))
+bwplot(resamps, layout = c(3, 1))
 ```
+
+The average three metrics are always higher with random forest than for the single tree model. The 95% confidence interval of the ROC for each model do not overlap (Fig. \ref{fig:fig7}). However, they do overlap in the case of specificity and sensitivity. 
+
+```{r,fig.cap="\\label{fig:fig7} Confidence intervals of performance metrics",out.extra = "", fig.pos = 'h!', fig.align="center"}
+metric <- c("ROC", "Spec", "Sens")
+p <- list()
+for (i in 1:3) {
+  p[[i]] <- dotplot(resamps, metric = metric[i])
+}
+do.call(grid.arrange, list(grobs = p, ncol = 3))
+```
+
+Finally, `caret` provides a p-value for the difference in each performance metric between the two models, assuming the distribution t and performing a Bonferroni adjustment for multi-testing. The differences are significant at 5% for the ROC and the sensitivity but not for the specificity.
+
+```{r}
+diff_rf <- diff(resamps)
+summary(diff_rf)
+```
+
+As a conclusion, over the three metrics the random forest model performs better than the single tree model. However, if the main objective of the study is maximizing the number of true soluble component, that is the specificity, the random forest model does not outperform the single tree model (positive class is insoluble).
 
 \section{Applying gradient boosting algorithm}
 
-```{r}
+```{r,eval = FALSE}
+ctrl <- trainControl(
+  method = "repeatedcv",
+  repeats = 5,
+  number = 10,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
 
+RF <- train(y ~ ., data = training, method = "ada", trControl = ctrl, metric = "ROC")
 ```
 
 \subsection{Compute the misclassification rates}
@@ -252,50 +410,51 @@ Using stumps as classification trees compute the misclassification rates of both
 Compare the test-set misclassification rates attained by different ensemble classifiers based on trees with maximum depth: stumps, 4-node trees, 8-node trees, and 16-node trees.
 
 ```{r}
-ctrl <- trainControl(method = "repeatedcv", 
-                     repeats=5,
-                     number = 10, 
-                     classProbs=TRUE, 
-                     summaryFunction=twoClassSummary)
 
-RF <- train (y ~ ., data=training, method="rf", trControl=ctrl, metric = "ROC")
 ```
 
+\section{Appendix}
 
-\section{Bibliography}
+\subsection{Boxplot of predictors with outcome variables}
 
-
-\{Annex}
-
-
-
-```{r}
+```{r,fig.cap="\\label{fig:figlast} Boxplot of predictors with outcome variables",out.extra = "", fig.pos = 'h!', fig.align="center"}
 vars <- colnames(soldat)
 
 p <- list()
 i <- 1
-for(v in vars[1:16]){
-  p[[i]] <- ggplot(data=soldat) + geom_boxplot(aes_string(x="y",y=v))
-  i <- i+1
-}
-do.call(grid.arrange,list(grobs=p,ncol=4))
-
-
-p <- list()
-i <- 1
-for(v in vars[17:32]){
-  p[[i]] <- ggplot(data=soldat) + geom_boxplot(aes_string(x="y",y=v))
-  i <- i+1
-}
-do.call(grid.arrange,list(grobs=p,ncol=4))
-
-p <- list()
-i <- 1
-for(v in vars[33:46]){
-  p[[i]] <- ggplot(data=soldat) + geom_boxplot(aes_string(x="y",y=v))
+for (v in vars[1:16]) {
+  p[[i]] <- ggplot(data = soldat) +
+    geom_boxplot(aes_string(x = "y", y = v))
   i <- i + 1
 }
-do.call(grid.arrange,list(grobs=p,ncol=4))
+do.call(grid.arrange, list(grobs = p, ncol = 4))
 
+
+p <- list()
+i <- 1
+for (v in vars[17:32]) {
+  p[[i]] <- ggplot(data = soldat) +
+    geom_boxplot(aes_string(x = "y", y = v))
+  i <- i + 1
+}
+do.call(grid.arrange, list(grobs = p, ncol = 4))
+
+p <- list()
+i <- 1
+for (v in vars[33:46]) {
+  p[[i]] <- ggplot(data = soldat) +
+    geom_boxplot(aes_string(x = "y", y = v))
+  i <- i + 1
+}
+do.call(grid.arrange, list(grobs = p, ncol = 4))
 ```
+
+
+\subsection{Code}
+
+```{r code = readLines(knitr::purl("~/Documents/MESIO/Statistical Learning/5_Modelos_basados_en_arboles/Classification-tree-model/Task_1_v2.Rmd", documentation = 0)), echo = T, eval = F}
+```
+
+
+\section{Bibliography}
 
