@@ -1,0 +1,16 @@
+base
+rpart
+gbm
+readr
+knitr
+lattice
+ggplot2
+caret
+gridExtra
+tidyverse
+tibble
+tidyr
+purrr
+dplyr
+stringr
+forcats
