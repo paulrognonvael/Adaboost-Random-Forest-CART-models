@@ -17,9 +17,10 @@ editor_options:
 ---
 
 ```{r, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE, warning = FALSE, error = FALSE, message = FALSE ,
-                      tidy.opts=list(width.cutoff=55))
-# we set same directory for data
+knitr::opts_chunk$set(
+  echo = FALSE, warning = FALSE, error = FALSE, message = FALSE,
+  tidy.opts = list(width.cutoff = 55)
+)
 ```
 
 
@@ -27,8 +28,8 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE, error = FALSE, message = FA
 # libraries
 
 # If the package is not installed then it will be installed
-if (!require("tree")) install.packages("tree")
-if (!require("tree")) install.packages("fastAdaboost")
+if (!require("rpart")) install.packages("rpart")
+if (!require("gbm")) install.packages("gbm")
 if (!require("readr")) install.packages("readr")
 if (!require("knitr")) install.packages("knitr")
 if (!require("caret")) install.packages("caret")
@@ -40,11 +41,12 @@ require("tidyverse")
 require("caret")
 require("gridExtra")
 require("ggplot2")
+require("gbm")
 ```
 
 \section{Problem}
 
-We want to predict the solubility of a compound using 72 noisy structural variables for which we have have no other information than values. The solubility of each compound is coded '1' for soluble and '-1' for insoluble. It is a binary classification problem. We want to build tree based models: CART, random forest and boosting trees models.
+We want to predict the solubility of a compound using 72 noisy structural variables for which we have have no other information than values. The solubility of each compound is coded '1' for soluble and '0' for insoluble. It is a binary classification problem. We want to build tree based models: CART, random forest and boosting trees models.
 
 \section{Exploratory data analysis}
 
@@ -64,17 +66,24 @@ The data set has **`r n`** observations on **`r p_start`** variables, that is on
 
 *Outcome variable:*
 
-**y variable**  indicates the solubility. `r sum(soldat$y == 1)` of the compounds are soluble, and `r sum(soldat$y == -1)` are not, which represents a `r paste(round(100*sum(soldat$y == 1)/dim(soldat)[1], 2), "%", sep="")` and a `r paste(round(100*sum(soldat$y ==-1)/dim(soldat)[1], 2), "%", sep="")`, respectively. The classes are not fully balanced but both classes are well represented.
+The variable **y**  indicates the solubility. `r sum(soldat$y == "soluble")` of the compounds are soluble, and `r sum(soldat$y == "insoluble")` are not, which represents a `r paste(round(100*sum(soldat$y == "soluble")/dim(soldat)[1], 2), "%", sep="")` and a `r paste(round(100*sum(soldat$y == "insoluble")/dim(soldat)[1], 2), "%", sep="")`, respectively. The classes are not fully balanced but both classes are well represented.
 
 ```{r}
+##################################
+#  Exploratory data analysis
+#################################
+
+# class frequency
 table(soldat$y)
 ```
 
 *Predictors:*
 
-Boxplots of our continous predictors (Fig.\ref{fig:fig1}) show the scale and variability of the predictors vary greatly. The difference in scales is not a problem to build tree based models because those are invariant under strictly monotone transformations of the individual predictors [@ESLII, p372].
+Boxplots of our continuous predictors (Fig.\ref{fig:fig1}) show the scale and variability of the predictors vary greatly. The difference in scales is not a problem to build tree based models because those are invariant under strictly monotone transformations of the individual predictors [@ESLII, p352].
 
 ```{r,fig.cap="\\label{fig:fig1} Boxplot of predictors",out.extra = "", fig.pos = 'h!', fig.align="center"}
+
+# predictors variance
 bxp1 <- soldat %>%
   select(-y) %>%
   select(num_range("x", c(1:18))) %>%
@@ -112,15 +121,18 @@ grid.arrange(bxp1, bxp2, bxp3, bxp4, ncol = 2)
 
 We also see that some of our predictors seem to have 0 o near 0 variance. The problem with those predictors is that they may become zero-variance predictors when the data are split into sub-samples for cross-validation for example or that a few samples with a different value from the one the majority of the sample takes may have an undue influence on the model. To identify those, two metrics can be used: the frequency of the most prevalent value over the second most frequent value and percentage of unique values. However, tree based models are insensitive to such problematic predictors so we can keep them in the dataset [@APM, p44].
 
-If near 0 variance predictors are not an issue, the number of unique values in predictors can impact the tree model. Tree based models have a selection bias and favour continuous variables with more granularity as they offer more possible splits [@APM, p182]. There is then the risk of a bias towards noise granular variables while informative but less granular variables might not be given the deserved importance. In Fig.\ref{fig:fig2} below, the histogram of the number of unique values per predictor shows some predictors have less than 100 unique values. We will need to keep this in mind when interpreting the variable importance scores.
+If near 0 variance predictors are not an issue, the number of unique values in predictors can impact the tree model. Tree based models have a selection bias and favor continuous variables with more granularity as they offer more possible splits [@APM, p182]. There is then the risk of a bias towards noise granular variables while informative but less granular variables might not be given the deserved importance. In Fig.\ref{fig:fig2} below, the histogram of the number of unique values per predictor shows some predictors have less than 100 unique values. We will need to keep this in mind when interpreting the variable importance scores.
 
 ```{r,fig.cap="\\label{fig:fig2} Histogram of number of unique values per predictor",out.extra = "", fig.pos = 'h!', fig.align="center"}
+
+# predictors granularity / number of unique values
 nb_unique_val <- function(x) {
   return(length(unique(x)))
 }
 
-tibble(nb = sapply(soldat %>% select(-y), nb_unique_val)) %>%
-  ggplot() +
+nb_unique_val_pred <- tibble(nb = sapply(soldat %>% select(-y), nb_unique_val), predictor = colnames(soldat)[colnames(soldat) != "y"])
+
+ggplot(nb_unique_val_pred) +
   geom_histogram(aes(x = nb), col = "grey", bins = 100) +
   geom_vline(xintercept = 300, col = "red") +
   xlab("Number of unique values")
@@ -130,30 +142,34 @@ tibble(nb = sapply(soldat %>% select(-y), nb_unique_val)) %>%
 
 \subsubsection{Correlation between predictors}
 
-Very high correlation between predictors is often an issue for model selection and it is the case for tree-based models [@APM, p202]. When two predictors are highly correlated, the choice between the two for a split will be driven by small differences between the two predictors that are noise, instead of valuable information. Uninformative predictors with high correlations to informative predictors had abnormally large importance values. Moreover two perfectly correlated predictors represent the same information but both will be chosen at random in the tree growth process, and the importance of the underlying variable they represent will be diluted in the importance scores.
+Very high correlation between predictors is often an issue for model selection and it is the case for tree-based models [@APM, p202]. When two predictors are highly correlated, the choice between the two for a split will be driven by small differences between the two predictors that are noise, instead of valuable information. Uninformative predictors with high correlations to informative predictors have abnormally large importance values. Moreover two perfectly correlated predictors represent the same information but both will be chosen at random in the tree growth process, and the importance of the underlying variable they represent will be diluted in the importance scores.
 
-We build a heatmap of the correlation matrix of the predictors and the dendogram for the corresponding hierarchical clustering (Fig.\ref{fig:fig3}). We observe some variables high correlate (red) and form clusters.
+We build a heatmap of the correlation matrix of the predictors and the dendogram for the corresponding hierarchical clustering (Fig.\ref{fig:fig3}). We observe some variables correlate highly (red) and form clusters.
 
 ```{r,fig.cap="\\label{fig:fig3} Heatmap of predictors correlation and hierarchical clustering",out.extra = "", fig.pos = 'h!', fig.align="center"}
+
+# predictors correlation heatmap
 v <- cor(soldat %>% select(-y), use = "pairwise.complete.obs")
 col <- colorRampPalette(c("blue", "white", "red"))(20)
 heatmap(v, col = col, symm = TRUE, Colv = "Rowv")
 ```
 
 ```{r}
+# filtering of highly correlated predictors
 high_corr <- colnames(soldat)[findCorrelation(v, cutoff = 0.95)]
 soldat <- soldat %>% select(-all_of(high_corr))
 ```
 
-The `caret` function `findCorrelation` lets us identify quickly which variables are high correlated and can be removed. We used a cutoff for Pearson's correlation of 0.95. We find `r length(high_corr)` predictors than can be removed and we are left with `r p_start-1-length(high_corr)` predictores.
+The `caret` function `findCorrelation` lets us identify quickly which variables are high correlated and can be removed. We used a cutoff for Pearson's correlation of 0.95. We find `r length(high_corr)` predictors than can be removed and we are left with `r p_start-1-length(high_corr)` predictors.
 
 \subsubsection{Correlation between predictors and outcome variable}
 
-The analysis of correlation between variables in an exploratory data analysis can also be useful to identify a subset of predictors that correlate with the outcome variable. This has two objectives: guiding the analysis and also finding a subset of predictors for model selection process. This is particularly useful in the case of high dimensional settings where a large number of predictors can severely hinder the model selection and estimation. Dimensionality reduction techniques can also be used to limit the number of predictors. In our case we have only `r p_start-length(high_corr)` predictors which is not such a large number and we decide not to reduce the dimension.
+The analysis of correlation between variables in an exploratory data analysis can also be useful to identify a subset of predictors that correlate with the outcome variable. This has two objectives: guiding the analysis and also finding a subset of predictors for model selection process. This is particularly useful in the case of high dimensional settings where a large number of predictors can severely hinder the model selection and estimation. Dimensionality reduction techniques can also be used to limit the number of predictors. In our case, we have only `r p_start-length(high_corr)` predictors which is not such a large number and we decide not to reduce the dimension.
 
-In our case the outcome in a binary categorial variable and the predictors are continuous. A possible way to identify predictors that can be useful in predicting the two classes are boxplots. A potential good predictor is a predictor which distribution differs under the two classes. The boxplots for each predictors are available in the Appendix. From all the predictors, four present visually different distributions under the two classes: `x35`, `x36`, `x37` and `x41`. and the boxplots are reproduced in \ref{fig:fig4}.
+In our analysis, the outcome in a binary categorical variable and the predictors are continuous. A way to identify predictors that can be useful in predicting the two classes is through boxplots. A potentially good predictor is a predictor which distribution differs under the two classes. From all the predictors, four present visually different distributions under the two classes: `x35`, `x36`, `x37` and `x41`. and the boxplots are reproduced in Fig. \ref{fig:fig4}.
 
 ```{r,fig.cap="\\label{fig:fig4} Boxplots of potential good predictors under the two classes",out.extra = "", fig.pos = 'h!', fig.align="center"}
+# covariation of outcome and selected predictors
 p <- list()
 i <- 1
 for (v in c("x35", "x36", "x37", "x41")) {
@@ -166,31 +182,39 @@ do.call(grid.arrange, list(grobs = p, ncol = 2))
 
 \subsection{Missing data}
 
+The filtered dataset has no missing data. Before filtering for highly correlated data, the variable `x71` had missings but it has been filtered out. In any case, the presence of missing data is not an issue for tree based models when using package `rpart` (or `rpart` through `caret`) as a surrogate split is used for prediction whenever there is a missing data for a particular variable over which a split is made.
+
 ```{r}
-apply(is.na(soldat), 2, mean)
+# number of missing data
+cat("Missing data per predictor\n")
+apply(is.na(soldat), 2, sum)
 ```
 
-The filtered dataset has no missing data. Before filtering for highly correlated data, the variable `x71` had missings but it has been filtered. In any case, the presence of missing data is not an issue for tree based models when using package `rpart` (`rpart` through `caret`) as a surrogate split is used for prediction whenever there is a missing data for a particular variable over which a split is made.
 
 \subsection{Outliers}
 
-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+A complete exploratory data analysis looks for atypical values in the dataset and, after inspection, decides on keeping or removing them. Although techniques such as dbscan exist, identifying outliers in multivariate datasets is challenging. Moreover we have no information on the nature of the predictors so it is difficult to tell whether statistically atypical values are real outliers, outside the range of possible or expectable values. Last but not least, trees are rather insensitive to outliers in predictors [@ESLII, p352] and we have no outliers in the binary outcome variable. As a consequence, we decide to keep all the observations.
  
 \section{Split into training/test dataset}
 
 To split the data into balanced training and test sets we can use the `caret` function `createDataPartition`.
 
 ```{r}
+##################################
+#  data partitioning
+#################################
+
 set.seed(1234)
 inTest <- createDataPartition(soldat$y, p = 0.5, list = FALSE)[, 1]
 test <- soldat[inTest, ]
 training <- soldat[-inTest, ]
 ```
 
-We check the train and test sets preserve the overall class distribution of the data.
+We check the training and test sets preserve the overall class distribution of the data.
 
 ```{r}
-cat("Train set class distribution\n")
+# check for balance training and test sets
+cat("Training set class distribution\n")
 round(table(training[, "y"]) / nrow(training), 2)
 cat("Test set class distribution\n")
 round(table(test[, "y"]) / nrow(test), 2)
@@ -199,12 +223,18 @@ round(table(test[, "y"]) / nrow(test), 2)
 \section{Pruned tree}
 \subsection{Fitting}
 
-We fit a single classification tree (CART) with `rpart1SE` method in `caret`. This implementation uses a Gini impurity function to chose the splits in the tree growth phase. The pruning is done by cost-complexity tuning. We use 5-fold cross-validation over the area under the ROC curve to choose the cost-complexity parameter. The choice of a 5-fold cross-validation as resampling method is driven by the will to pick a method that has little computional cost and that can be used over all the models that will be fitted in this work, such that the training error measures are comparable. Random forest and boosting models are computationally costly by itself so a high cost resampling can make the fitting of those very lengthy. We chose the area under the ROC as performance metric because its a more comprehensive performance metric than accuracy or Kappa, that is availably for binary classification. Finally, `rpart1SE` applies the one-standard deviation rule to pick the final tree which results in a smaller tree.
+We fit a single classification tree (CART) with `rpart1SE` method in `caret`. This implementation uses a Gini impurity function to chose the splits in the tree growth phase. The pruning is done by cost-complexity tuning. We use 5-fold cross-validation with the area under the ROC curve as performance metric to choose the cost-complexity parameter. The choice of a 5-fold cross-validation repeated 3 times as resampling method is driven by the will to pick a method that has little computational cost and that can be used over all the models that will be fitted in this work, such that the training error measures are comparable. Random forest and boosting models are computationally costly by themselves so a high cost resampling can make the fitting of those very lengthy. We chose the area under the ROC as performance metric because it is a more comprehensive performance metric than accuracy or Kappa, that is available for binary classification. Finally, `rpart1SE` applies the one-standard deviation rule to pick the final tree which results in a smaller tree.
 
 ```{r}
+##################################
+#  CART model
+#################################
+
+# fitting
 ctrl <- trainControl(
-  method = "cv",
+  method = "repeatedcv",
   number = 5,
+  repeats = 3,
   classProbs = TRUE,
   summaryFunction = twoClassSummary
 )
@@ -218,17 +248,19 @@ CART <- train(y ~ ., data = training, method = "rpart1SE", trControl = ctrl, met
 We can compute a series of performance metric for the final model on the training set with the `confusionMatrix` function of `caret`. We see the model has good accuracy, significantly different from the non-informative rate.  Taking 'insoluble' as the positive class, the sensitivity is better than the specificity.
 
 ```{r}
+# training error
 pred_train_CART <- predict.train(CART, type = "raw")
 confusionMatrix(data = pred_train_CART, reference = training$y)
 ```
 
-We can also obtain the area under the ROC curve: `r round(CART$results[,2],3)`
+We can also obtain the area under the ROC curve: `r round(CART$results[,2],3)`.
 
-\subsubsection{Test errror}
+\subsubsection{Test error}
 
 We now compute the same performance metrics on the test set. We see the accuracy is a bit smaller but still significantly different from the non-informative rate. The Mcnemar's test p-value shows the classification is also significantly different from the best guess. Both sensitivity and specificity are smaller than in the training set but by a small amount. Sensitivity is again larger than the specificity.
 
 ```{r}
+# test error
 pred_CART <- predict(CART, newdata = test)
 
 confusionMatrix(data = pred_CART, reference = test$y)
@@ -236,19 +268,30 @@ confusionMatrix(data = pred_CART, reference = test$y)
 df <- data.frame(obs = test$y, pred = pred_CART, predict(CART, newdata = test, type = "prob"))
 ```
 
-The area under the ROC curve is smaller than on the training set at `r round(twoClassSummary(df, lev = levels(df$obs))[1],3)`
+The area under the ROC curve is smaller than on the training set at `r round(twoClassSummary(df, lev = levels(df$obs))[1],3)`.
 
 \section{Random forest}
 
 \subsection{Fitting}
 
-We use `rf` method in `caret` that sources the implemention in package `randomForest`. We need to choose two tuning parameters, the number of trees and $m_{try}$ the number of randomly selected predictors to choose from at each split. In the `rf` method in `caret`, $m_{try}$ is the only parameter marked as tuning parameter. So to implement the grid search, we used the inbuilt function `tuneGrid` for $m_{try}$ and a loop over values of the number of tree. The computional cost in high so we ran the code in a separate Google colab using parallel computing (see 'Parallel Random Forest'attached). The code is reproduced in this report. We first tried equally spaced values of $m_{try}$ between 2 and 45 and then reduced the range to 2 to 12 because the best $m_{try}$ found was always small values. We try values of 1000, 1500, 2000 and 2500 for the number of trees. Such values were chosen following the recommendations of [@APM, p387]. The grid of $m_{try}$ include the often recommended value of the square root of the number of predictors, approximately `r round(sqrt(p_start-1-length(high_corr)),0)`. The resampling applied for the paramters tuning is a 5-fold cross-validation, consistent with the one used for the CART model. The performance metric is the area under the ROC.
+We use `rf` method in `caret` that sources the implementation in package `randomForest`. We need to choose two tuning parameters, the number of trees and $m_{try}$, the number of randomly selected predictors to choose from at each split. In the `rf` method in `caret`, $m_{try}$ is the only parameter marked as tuning parameter. So to implement the grid search, we used the inbuilt function `tuneGrid` for $m_{try}$ and a loop over values of the number of trees. The computational cost in high so we ran the code in a separate Google colab using parallel computing (see 'Parallel Random Forest' attached). The code is reproduced in this report in the Appendix. We first tried equally spaced values of $m_{try}$ between 2 and 45 and then reduced the range to 2 to 12 because the best $m_{try}$ found was always among small values. We try values of 1000, 1500, 2000 and 2500 for the number of trees. Such values were chosen following the recommendations of @APM [p387]. The grid for $m_{try}$ includes the often recommended value of the square root of the number of predictors, approximately `r round(sqrt(p_start-1-length(high_corr)),0)`. The resampling applied for the parameters tuning is a 5-fold cross-validation repeated 3 times, consistent with the one used for the CART model. The performance metric is the area under the ROC.
 
 ```{r, eval = FALSE}
+##################################
+#  Random forest
+#################################
+
+# fitting (not evaluated inside R markdown but in seperate colab 'Parallel Random Forest')
 control <- trainControl(
-  method = "cv", number = 5, search = "grid", classProbs = TRUE,
-  allowParallel = TRUE, summaryFunction = twoClassSummary
+  method = "repeatedcv",
+  number = 5,
+  repeats = 3,
+  search = "grid",
+  classProbs = TRUE,
+  allowParallel = TRUE,
+  summaryFunction = twoClassSummary
 )
+
 metric <- "ROC"
 tunegrid <- expand.grid(mtry = seq(2, 45, 5)) # then seq(2,12,2)
 rf_models <- list()
@@ -270,10 +313,15 @@ for (ntree in c(1000, 1500, 2000, 2500)) {
 save(rf_models, file = "rf_models.Rdata")
 ```
 
-For the values in the grid of number of trees yielded very similar results (\ref{fig:fig5}). For all of them, the maximum AUC is attained for small values of $m_{try}$, 2 or 4. We noted than for initial runs of the random forest with the unfiltered set of predictors, the best $m_{try}$ varied more across the number of trees values. This might be due to the confusion introduced in the best split selection by highly correlated predictors as explained in the exploratory data analysis. We see little to no improvement in the area under the ROC curve for number of trees larger than 1500.
+The values in the grid for number of trees yielded very similar results (Fig.\ref{fig:fig5}). For all of them, the maximum AUC is attained for small values of $m_{try}$, 2 or 4. We noted than for initial runs of the random forest with the unfiltered set of predictors, the best $m_{try}$ varied more across the number of trees values. This might be due to the confusion introduced in the best split selection by highly correlated predictors as explained in the exploratory data analysis. We see little to no improvement in the area under the ROC curve for number of trees larger than 1500.
+
+```{r}
+# loading 'Parallel random forest' output
+load("rf_models.Rdata")
+```
 
 ```{r,fig.cap="\\label{fig:fig5} ROC in function of mtry and number of trees",out.extra = "", fig.pos = 'h!', fig.align="center"}
-load("rf_models.Rdata")
+# parameters turning
 n_trees <- c(1000, 1500, 2000, 2500)
 p <- list()
 for (i in 1:4) {
@@ -284,7 +332,7 @@ for (i in 1:4) {
 do.call(grid.arrange, list(grobs = p, ncol = 2))
 ```
 
-We order the pairs of $m_{try}$ and number of trees by ROC and present the top 10 ones in Table 1. The highest ROC is obtained for 1500 trees with $m_{try}$ equal to 2.
+We order the pairs of $m_{try}$ and number of trees by ROC and present the top 10 ones in Table 1. The highest ROC is obtained for 1500 trees with $m_{try}$ equal to 2. That is our final random forest model.
 
 ```{r}
 df <- rbind(
@@ -315,17 +363,19 @@ RF <- rf_models[[2]]
 We can compute a series of performance metric for the final model on the training set. We see the model has excellent accuracy, significantly different from the non-informative rate.  Taking 'insoluble' as the positive class, both the sensitivity and specificity are very high.
 
 ```{r}
+# training error
 pred_train_RF <- predict.train(RF, type = "raw")
 confusionMatrix(data = pred_train_RF, reference = training$y)
 ```
 
 We can also obtain the area under the ROC curve: `r round(RF$results[1,2],3)`
 
-\subsubsection{Test errror}
+\subsubsection{Test error}
 
 We now compute the same performance metrics on the test set. We see the accuracy is smaller but still significantly different from the non-informative rate. The Mcnemar's test p-value shows the classification is also significantly different from the best guess. Both sensitivity and specificity are smaller than in the training set. Sensitivity is  larger than the specificity.
 
 ```{r}
+# test error
 pred_RF <- predict(RF, newdata = test)
 
 confusionMatrix(data = pred_RF, reference = test$y)
@@ -337,18 +387,26 @@ The area under the ROC curve is larger than on the training set at `r round(twoC
 
 \subsection{Variable importance}
 
-We can extract the variable importance using the `varImp` function of `caret`. For classification random forest is computed as the difference in out-of-bag accuracy when permuting each predictor, standardized over all the trees. The values are scaled to have a maximum value of 100. We find among the three most important variables are three out of the 4 variables we had flagged as potential good predictors in the exploratory data analysis: `x36`, `x37` and `x41`.
+We can extract the variable importance using the `varImp` function of `caret`. For random forest models, the variable importance is computed as the difference in out-of-bag accuracy when permuting each predictor, standardized over all the trees. The values are scaled to have a maximum value of 100. We find that the three most important variables are three out of the 4 variables we had flagged as potentially good predictors in the exploratory data analysis: `x36`, `x37` and `x41`. We note that those variables have a large number of unique values: between `r min(nb_unique_val_pred %>% filter(predictor %in% c("x36","x37","x41")) %>% select(nb))` and `r max(nb_unique_val_pred %>% filter(predictor %in% c("x36","x37","x41")) %>% select(nb))`. Their observed importance is then not misleading.
 
 ```{r}
+# variable importance
 varImp(RF)
 ```
 
 
-\section{Compare pruned single tree and random forest classifier}
+\section{Comparison pruned single tree and random forest}
 
-The function `resamples` of `caret` lets us compare easily the performance of the two models. Resamples provide an estimate of the standard error of the performance metric for each model. First we can visualize the distributions of the three performance metrics ROC, specificity and sensitivity over the cross-validation folds for each model (Fig. \ref{fig:fig6}). We see the boxplots of the ROC are well separated with the median and third and first quartiles of random forest ROC being superior to single tree ones. The same occurs for the sensitivity. The boxplots of the specificity of the single tree and the random forest models overlap but the median of the random forest specificities is higher that the single tree one.
+\subsection{Training error}
+
+The function `resamples` of `caret` lets us compare easily the performance of the two models on the training set. Resamples provide an estimate of the standard error of the performance metric for each model on the training set. First, we can visualize the distributions of the three performance metrics ROC, specificity and sensitivity over the cross-validation folds for each model (Fig. \ref{fig:fig6}). We see the boxplots of the ROC are well separated with the median, the third and first quartiles of random forest ROC being superior to the single tree ones. The same occurs for the sensitivity. The boxplots of the specificity of the single tree and the random forest models overlap but the median of the random forest specificities is higher that the single tree one.
 
 ```{r,fig.cap="\\label{fig:fig6} Boxplot of performance metric distributions",out.extra = "", fig.pos = 'h!', fig.align="center"}
+##################################
+#  Comparison CART and random forest
+#################################
+
+# boxplot performance on training set
 resamps <- resamples(list(
   SingleTree = CART,
   RandomForest = RF
@@ -363,9 +421,10 @@ trellis.par.set(theme1)
 bwplot(resamps, layout = c(3, 1))
 ```
 
-The average three metrics are always higher with random forest than for the single tree model. The 95% confidence interval of the ROC for each model do not overlap (Fig. \ref{fig:fig7}). However, they do overlap in the case of specificity and sensitivity. 
+The average three metrics on the training set are always higher with random forest than for the single tree model. The 95% confidence interval of the ROC for each model do not overlap (Fig. \ref{fig:fig7}). The same occurs with sensitivity. However, they do overlap in the case of specificity. 
 
 ```{r,fig.cap="\\label{fig:fig7} Confidence intervals of performance metrics",out.extra = "", fig.pos = 'h!', fig.align="center"}
+# confidence intervals for performance metrics on training set
 metric <- c("ROC", "Spec", "Sens")
 p <- list()
 for (i in 1:3) {
@@ -374,87 +433,312 @@ for (i in 1:3) {
 do.call(grid.arrange, list(grobs = p, ncol = 3))
 ```
 
-Finally, `caret` provides a p-value for the difference in each performance metric between the two models, assuming the distribution t and performing a Bonferroni adjustment for multi-testing. The differences are significant at 5% for the ROC and the sensitivity but not for the specificity.
+Finally, `caret` provides a p-value for the difference in each performance metric between the two models, assuming a Student's T distribution and performing a Bonferroni adjustment for multi-testing. On the training set, the differences are significant at 5% for the ROC, the sensitivity and the specificity.
 
 ```{r}
+# pvalue for difference in perf. metrics on training set
+
 diff_rf <- diff(resamps)
 summary(diff_rf)
 ```
 
-As a conclusion, over the three metrics the random forest model performs better than the single tree model. However, if the main objective of the study is maximizing the number of true soluble component, that is the specificity, the random forest model does not outperform the single tree model (positive class is insoluble).
+\subsection{Test error}
 
-\section{Applying gradient boosting algorithm}
+From the performance metrics on test set reported above, we see the accuracy, ROC and sensitivity are higher for the random forest model than for the single tree. However, the specificity is almost the same between the two models on the test set. 
 
-```{r,eval = FALSE}
-ctrl <- trainControl(
+\subsection{Conclusion}
+
+Considering all the performance metrics, the random forest model performs better than the single tree model in general. However, if the main concern of the study is maximizing the number of true soluble component, that is the specificity (positive class is insoluble), both the random forest and the single tree models are valid choices as the difference in performance is almost null on the test set. Moreover, the random forest model is less interpretable and much more costly computationally than a single tree so for specificity the single tree model can be a good choice.
+
+\section{Gradient boosting - adaboost}
+
+\subsection{Adaboost with stumps}
+
+\subsubsection{Fitting}
+
+We use the `gbm` method in `caret` with `distribution` argument equal to "adaboost" to fit a adaboost model. We set the `interaction.depth` parameter at 1 to obtain an adaboost with stumps. We perform a grid search over 11 values of the number of trees between 1 and 2000 and 5 values of the shrinkage parameter between 0.0001 and 1. We leave the fourth tuning parameter the minimum number of observation in a terminal node at 10, the default value. We use 5-fold cross-validation repeated 3 times resampling for consistency in this work and computational cost. We used accuracy as performance metric. We do not evaluate the code within this markdown for its computation time. We ran the code in an independent Google colab (see 'Parallel Boosting Trees' attached). The code is reproduced in this report in the Appendix.
+
+```{r, eval = FALSE}
+##################################
+#  Adaboost with stumps
+#################################
+
+# fitting (not evaluated inside R markdown but in seperate colab 'Parallel Boosting Trees')
+control <- trainControl(
   method = "repeatedcv",
-  repeats = 5,
-  number = 10,
-  classProbs = TRUE,
-  summaryFunction = twoClassSummary
+  number = 5,
+  repeats = 3,
+  returnResamp = "all",
+  classProbs = TRUE
 )
 
-RF <- train(y ~ ., data = training, method = "ada", trControl = ctrl, metric = "ROC")
+metric <- "Accuracy"
+
+grid <- expand.grid(
+  .interaction.depth = 1,
+  .n.trees = c(
+    1, 10, 100, 250, 500, 750, 1000, 1250, 1500,
+    1750, 2000, 2250, 2500, 2750, 3000, 3250, 3500
+  ),
+  .shrinkage = c(.0001, .001, .01, .1, 1),
+  .n.minobsinnode = 10
+)
+
+stumps_2000_model <- train(y ~ .,
+  data = training,
+  method = "gbm",
+  bag.fraction = 0.5,
+  distribution = "adaboost",
+  trControl = control,
+  tuneGrid = grid,
+  verbose = FALSE,
+  metric = metric
+)
+
+save(stumps_2000_model, file = "stumps_2000_model.Rdata")
 ```
-
-\subsection{Compute the misclassification rates}
-
-Using stumps as classification trees compute the misclassification rates of both the learning set and the test set across 2,000 iterations of gbm. Represent graphically the error as a function of the number of boosting iterations.
 
 ```{r}
-
+# loading output of 'Parallel Boosting Trees'
+load("stumps_2000_model.Rdata")
 ```
 
-\subsection{Compare the test-set misclassification rates}
+From the results of the grid search over the number of trees and shrinkage (\ref{fig:fig8}), the best shrinkage value is 0.1 as it gives the best accuracy almost uniformly across the number of trees values. It yields the best or second best for all number of trees. Furthermore, the accuracy with shrinkage at 0.1 reaches the top accuracy faster than with other shrinkage values. We retain 0.1 as value of shrinkage.
 
-Compare the test-set misclassification rates attained by different ensemble classifiers based on trees with maximum depth: stumps, 4-node trees, 8-node trees, and 16-node trees.
+```{r,fig.cap="\\label{fig:fig8} Accuracy in function of the number of trees and shrinkage on training set", out.extra = "", fig.pos = 'h!', fig.align="center"}
+# tuning parameter grid search plot
+ggplot(stumps_2000_model)
+```
+
+\subsubsection{Performance - Training error}
+
+We can compute the missclassification rate from the training result by computing 1-accuracy. We obtain a curve symmetric to the one we observed above for the accuracy at shrinkage = 0.1 (Fig. \ref{fig:fig9}). The missclassification decreases sharply from 1 to 250 boosting iterations (number of trees) and then stagnates. The lowest values is obtained for 1250 boosting iterations.
+
+```{r,fig.cap="\\label{fig:fig9} Missclassifaction rate in function of boosting iterations on training set", out.extra = "", fig.pos = 'h!', fig.align="center"}
+# training missclassification rate as a function of n.trees
+df_res_ada_train <- stumps_2000_model$results %>% filter(shrinkage == 0.1)
+df_res_ada_train$missclassification <- 1 - df_res_ada_train$Accuracy
+
+ggplot(df_res_ada_train) +
+  geom_line(aes(x = n.trees, y = missclassification)) +
+  geom_point(aes(x = n.trees, y = missclassification)) +
+  xlab("# Boosting Iterations") +
+  ylab("Missclassification rate (Cross-Validation")
+```
+
+\subsubsection{Performance - Test error}
+
+Combining the `update.train` and the `predict` functions of `caret` we can get the predictions on the test set from our `train` object for all the number of boosting trees values in the grid (Fig.\ref{fig:fig10}). We see the missclassification rate decreases as fast as the training error until 1000 iterations, then stagnates. The missclassification starts increasing from 2750 trees while the training error remains at its minimum level, indicating overfitting.
+
+```{r, eval= FALSE, cache = TRUE}
+# test missclassification rate as a function of n.trees
+# not evaluated in the Rmarkdown
+boosting_iter <- c(1, 10, 100, 250, 500, 750, 1000, 1250, 1500, 1750, 2000, 2250, 2500, 2750, 3000, 3250, 3500)
+miss_rate <- c()
+for (i in 1:length(boosting_iter)) {
+  model <- update(stumps_2000_model, list(
+    interaction.depth = 1,
+    n.trees = boosting_iter[i],
+    shrinkage = .1,
+    n.minobsinnode = 10
+  ))
+  pred_adaboost <- predict(model, newdata = test)
+  miss_rate <- c(miss_rate, mean(pred_adaboost != test$y))
+}
+
+df_res_ada_test <- data.frame(n.trees = boosting_iter, missclassification = miss_rate)
+
+df_res_ada <- rbind(
+  df_res_ada_train[, c("n.trees", "missclassification")],
+  df_res_ada_test
+)
+df_res_ada$Set <- c(
+  rep("Training", nrow(df_res_ada_train), ),
+  rep("Test", nrow(df_res_ada_test))
+)
+save(df_res_ada, file = "df_res_ada.Rdata")
+```
+
+
+```{r, fig.cap="\\label{fig:fig10} Missclassifaction rate in function of boosting iterations on test set", out.extra = "", fig.pos = 'h!', fig.align="center"}
+load("df_res_ada.Rdata")
+ggplot(df_res_ada) +
+  geom_line(aes(x = n.trees, y = missclassification, col = Set)) +
+  geom_point(aes(x = n.trees, y = missclassification, col = Set, pch = Set)) +
+  xlab("# Boosting Iterations") +
+  ylab("Missclassification rate (Cross-Validation")
+```
+
+\subsubsection{Increasing the number of boosting iterations in a single adaboost model}
+
+The study of the evolution of missclassification rate along the number of boosting iterations above has been carried out with `caret` which fits different instances of adaboost for the different values of the tuning parameter n.tree. With `gbm.more` from the `gbm` package, we can increase incrementally the number of tree of a single adaboost model to study the evolution of the missclassification rate. Fig \ref{fig:fig10bis} more clearly shows the overfitting as the number of iterations increases: the test missclassification rate stagnates while the training one keeps decreasing.
+
+```{r, eval = FALSE, cache = TRUE}
+#### Train and test missclassification rates as a function of n.trees with gbm.more
+
+# not evaluated in Rmarkdown
+
+# recodifying y for gbm adaboost
+train_gbm <- training
+train_gbm$y <- as.numeric(training$y)
+train_gbm <- train_gbm %>% mutate(y = case_when(y == 2 ~ 0, TRUE ~ 1))
+
+test_gbm <- test
+test_gbm$y <- as.numeric(test$y)
+test_gbm <- test_gbm %>% mutate(y = case_when(y == 2 ~ 0, TRUE ~ 1))
+
+# first gbm with 10 iterations
+b_start <- 10
+ada <- gbm(y ~ .,
+  distribution = "adaboost", data = train_gbm,
+  n.trees = 10, interaction.depth = 1, n.minobsinnode = 10,
+  shrinkage = 0.1, cv.folds = 15
+)
+pred_ada_test <- as.numeric(predict.gbm(ada, newdata = test_gbm, n.trees = ada$n.trees) > 0.5)
+miss_rate_test <- mean(pred_ada_test != test_gbm$y)
+
+pred_ada_train <- as.numeric(predict.gbm(ada, newdata = train_gbm, n.trees = ada$n.trees) > 0.5)
+miss_rate_train <- mean(pred_ada_train != train_gbm$y)
+
+# updating gbm with more iterations
+for (diff_b in diff(boosting_iter)[-1]) {
+  ada <- gbm.more(ada, n.new.trees = diff_b, data = train_gbm)
+  pred_ada_test <- as.numeric(predict.gbm(ada, newdata = test_gbm, n.trees = ada$n.trees) > 0.5)
+  miss_rate_test <- c(miss_rate_test, mean(pred_ada_test != test_gbm$y))
+
+  pred_ada_train <- as.numeric(predict.gbm(ada, newdata = train_gbm, n.trees = ada$n.trees) > 0.5)
+  miss_rate_train <- c(miss_rate_train, mean(pred_ada_train != train_gbm$y))
+}
+
+# data frame of missclassification rate
+df <- data.frame(
+  n.trees = rep(boosting_iter[-1], 2),
+  Set = c(rep("Training", length(boosting_iter[-1])), rep("Test", length(boosting_iter[-1]))),
+  missclassification = c(miss_rate_train, miss_rate_test)
+)
+save(df, file = "df_res_ada_incre.Rdata")
+```
+
+
+```{r, fig.cap="\\label{fig:fig10bis} Missclassifaction rate with incremental boosting iterations on test set", out.extra = "", fig.pos = 'h!', fig.align="center"}
+load("df_res_ada_incre.Rdata")
+# plot
+ggplot(df) +
+  geom_line(aes(x = n.trees, y = missclassification, col = Set)) +
+  geom_point(aes(x = n.trees, y = missclassification, col = Set, pch = Set)) +
+  xlab("# Boosting Iterations") +
+  ylab("Missclassification rate (Cross-Validation")
+```
+
+
+\subsection{Adaboost with larger interaction depth}
+
+\subsubsection{Fitting}
+
+We use the same `gbm` method in `caret` with `distribution` argument equal to "adaboost" to fit an adaboost model. Instead of having the `interaction.depth` parameter set at 1, we include it in the grid search and iterate over the values of 1, 4, 8 and 16. We leave the fourth tuning parameter, the minimum number of observations in a terminal node, at the default value of 10. Again we uses 5-fold cross-validation repeated 3 times as resampling method. We ran the code in an independent Google colab (see 'Parallel Boosting Trees' attached). The code is reproduced in this report in the Appendix.
+
+```{r, eval = FALSE}
+##################################
+#  Adaboost with larger interaction depth
+#################################
+
+# fitting (not evaluated inside R markdown but in seperate colab 'Parallel Boosting Trees')
+grid <- expand.grid(
+  .interaction.depth = c(1, 4, 8, 16),
+  .n.trees = c(
+    1, 10, 100, 250, 500, 750, 1000, 1250, 1500,
+    1750, 2000, 2250, 2500, 2750, 3000, 3250, 3500
+  ),
+  .shrinkage = c(.0001, .001, .01, .1, 1),
+  .n.minobsinnode = 10
+)
+
+multi_lvl_model <- train(y ~ .,
+  data = training,
+  method = "gbm",
+  bag.fraction = 0.5,
+  distribution = "adaboost",
+  trControl = control,
+  tuneGrid = grid,
+  verbose = FALSE,
+  metric = metric
+)
+
+multi_lvl_model
+
+save(multi_lvl_model, file = "multi_lvl_model.Rdata")
+```
 
 ```{r}
-
+# loading output from 'Parallel Boosting Trees'
+load("multi_lvl_model.Rdata")
 ```
+
+We see from the grid search output (Fig. \ref{fig:fig11}) that the value of 0.1 for the shrinkage in the best across all interaction depths. In all the cases it is the best or the second best across all the values of number of boosting iterations and interaction depth. Accuracy with shrinkage at 0.1 reaches its top value faster than with other shrinkage values. However for large numbers of boosting iterations and large interaction depths, there is little to no difference in the accuracy between shrinkage values of 0.1 and 0.01. We choose a shrinkage value of 0.1 for all the the interaction depths and number of boosting iterations.
+
+```{r,fig.cap="\\label{fig:fig11} Accuracy in function of boosting iterations, shrinkage and interaction depth on training set", out.extra = "", fig.pos = 'h!', fig.align="center"}
+# tuning parameters grid search plot
+ggplot(multi_lvl_model)
+```
+
+\subsubsection{Test error}
+
+Making use of the `update.train` and the `predict` functions of `caret` again, we get the predictions on the test set from our `train` object for all the number of boosting trees and interaction depth values in the grid  (Fig.\ref{fig:fig12}). The test error is lower with maximum depth of 16 across all values of the number of boosting iterations.
+
+```{r,eval = FALSE,cache = TRUE}
+# test missclassification rate as a function of n.trees
+# not evaluated in the Rmarkdown
+boosting_iter <- c(
+  1, 10, 100, 250, 500, 750, 1000, 1250, 1500,
+  1750, 2000, 2250, 2500, 2750, 3000, 3250, 3500
+)
+depth <- c(1, 4, 8, 16)
+miss_rate <- c()
+depth_ord <- c()
+boosting_iter_ord <- c()
+
+for (i in 1:length(boosting_iter)) {
+  for (j in 1:length(depth)) {
+    model <- update(multi_lvl_model, list(
+      interaction.depth = depth[j],
+      n.trees = boosting_iter[i],
+      shrinkage = .01,
+      n.minobsinnode = 10
+    ))
+    pred_adaboost <- predict(model, newdata = test)
+    miss_rate <- c(miss_rate, mean(pred_adaboost != test$y))
+    boosting_iter_ord <- c(boosting_iter_ord, boosting_iter[i])
+    depth_ord <- c(depth_ord, depth[j])
+  }
+}
+
+df_res_ada_test_depth <- data.frame(
+  n.trees = boosting_iter_ord,
+  missclassification = miss_rate,
+  depth = depth_ord
+)
+
+df_res_ada_test_depth$depth <- as.factor(df_res_ada_test_depth$depth)
+save(df_res_ada_test_depth, file = "df_res_ada_test_depth.Rdata")
+```
+
+
+```{r, fig.cap="\\label{fig:fig12} Missclassifaction rate in function of boosting iterations and depth on test set", out.extra = "", fig.pos = 'h!', fig.align="center"}
+load("df_res_ada_test_depth.Rdata")
+
+ggplot(df_res_ada_test_depth) +
+  geom_line(aes(x = n.trees, y = missclassification, col = depth)) +
+  geom_point(aes(x = n.trees, y = missclassification, col = depth, pch = depth)) +
+  xlab("# Boosting Iterations") +
+  ylab("Missclassification rate (Cross-Validation") +
+  labs(col = "Depth", pch = "Depth")
+```
+
 
 \section{Appendix}
-
-\subsection{Boxplot of predictors with outcome variables}
-
-```{r,fig.cap="\\label{fig:figlast} Boxplot of predictors with outcome variables",out.extra = "", fig.pos = 'h!', fig.align="center"}
-vars <- colnames(soldat)
-
-p <- list()
-i <- 1
-for (v in vars[1:16]) {
-  p[[i]] <- ggplot(data = soldat) +
-    geom_boxplot(aes_string(x = "y", y = v))
-  i <- i + 1
-}
-do.call(grid.arrange, list(grobs = p, ncol = 4))
-
-
-p <- list()
-i <- 1
-for (v in vars[17:32]) {
-  p[[i]] <- ggplot(data = soldat) +
-    geom_boxplot(aes_string(x = "y", y = v))
-  i <- i + 1
-}
-do.call(grid.arrange, list(grobs = p, ncol = 4))
-
-p <- list()
-i <- 1
-for (v in vars[33:46]) {
-  p[[i]] <- ggplot(data = soldat) +
-    geom_boxplot(aes_string(x = "y", y = v))
-  i <- i + 1
-}
-do.call(grid.arrange, list(grobs = p, ncol = 4))
-```
-
-
-\subsection{Code}
 
 ```{r code = readLines(knitr::purl("~/Documents/MESIO/Statistical Learning/5_Modelos_basados_en_arboles/Classification-tree-model/Task_1_v2.Rmd", documentation = 0)), echo = T, eval = F}
 ```
 
 
 \section{Bibliography}
-
